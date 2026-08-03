@@ -1,5 +1,14 @@
-"dependencies": {
-  "express": "^4.xx.x",
-  "mongoose": "^8.xx.x",
-  "ws": "^8.xx.x"
+{
+  "name": "capstonedesign_server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mongoose": "^8.3.0",
+    "ws": "^8.16.0"
+  }
 }
