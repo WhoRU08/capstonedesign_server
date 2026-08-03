@@ -10,7 +10,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // 1. MongoDB Atlas 연결
-const MONGO_URI = process.env.MONGODB_URI || mongodb+srv://capstonedesign:capstonedesign_07@cluster0.rm17unn.mongodb.net/ble_tracker?retryWrites=true&w=majority"
+const MONGO_URI = process.env.MONGODB_URI || "mongodb+srv://capstonedesign:capstonedesign_07@cluster0.rm17unn.mongodb.net/ble_tracker?retryWrites=true&w=majority";
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log('MongoDB Atlas 연결 성공!'))
