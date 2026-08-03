@@ -1,97 +1,108 @@
 const express = require('express');
-const cors = require('cors');
+const http = require('http');
+const WebSocket = require('ws');
 const mongoose = require('mongoose');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-// 미들웨어 설정
-app.use(cors());
 app.use(express.json());
 
-// 1. MongoDB Atlas 클라우드 DB 연결 (환경 변수 적용)
-const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://capstonedesign:capstonedesign_07@capstonedesign.rm17unn.mongodb.net/?appName=Capstonedesign";
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+// 1. MongoDB Atlas 연결
+const MONGO_URI = process.env.MONGODB_URI || "mongodb+srv://capstonedesign:capstonedesign_07@cluster0.mongodb.net/ble_tracker?retryWrites=true&w=majority";
 
 mongoose.connect(MONGO_URI)
-  .then(() => console.log('[DB] MongoDB Atlas 클라우드 연결 성공'))
-  .catch(err => console.error('[DB] 연결 에러:', err));
+  .then(() => console.log('MongoDB Atlas 연결 성공!'))
+  .catch((err) => console.error('MongoDB Atlas 연결 실패:', err));
 
-// 2. 위치 데이터 스키마(규격) 정의
+// 2. 웹소켓 클라이언트 관리 및 핑-퐁(Ping-Pong) 설정
+const appClients = new Set();
+
+const interval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      appClients.delete(ws);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+wss.on('connection', (ws) => {
+  console.log('모바일 앱 웹소켓 연결 완료');
+  ws.isAlive = true;
+  appClients.add(ws);
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  ws.on('close', () => {
+    appClients.delete(ws);
+  });
+});
+
+wss.on('close', () => {
+  clearInterval(interval);
+});
+
+// 3. DB 스키마 정의
 const LocationSchema = new mongoose.Schema({
-  deviceId: { type: String, required: true },
-  latitude: { type: Number, required: true },
-  longitude: { type: Number, required: true },
-  rssi: { type: Number, default: 0 },
-  battery: { type: Number, default: 100 },
+  deviceId: String,
+  latitude: Number,
+  longitude: Number,
+  rssi: Number,
   timestamp: { type: Date, default: Date.now }
 });
 
 const Location = mongoose.model('Location', LocationSchema);
 
-// 3. API 엔드포인트 정의
-
-// [GET] 루트 경로 추가 (Cannot GET / 해결)
-app.get('/', (req, res) => {
-  res.status(200).json({
-    status: "online",
-    message: "Capstone Design Location Server is running!",
-    endpoints: {
-      saveLocation: "POST /api/ble/relay",
-      getLatestLocation: "GET /api/location/latest/:deviceId",
-      getAllLocations: "GET /api/location/all"
-    }
-  });
-});
-
-// [POST] 스마트폰이 BLE로 수집한 위치 데이터를 클라우드 DB에 저장
+// 4. API 엔드포인트
+// (1) 데이터 수신 및 실시간 브로드캐스트
 app.post('/api/ble/relay', async (req, res) => {
   try {
-    const { deviceId, latitude, longitude, rssi, battery } = req.body;
+    const { deviceId, latitude, longitude, rssi } = req.body;
 
-    if (!deviceId || latitude === undefined || longitude === undefined) {
-      return res.status(400).json({ status: "error", message: "필수 데이터 누락" });
-    }
+    const locationData = new Location({ deviceId, latitude, longitude, rssi });
+    await locationData.save();
 
-    const newLocation = new Location({
-      deviceId,
-      latitude: parseFloat(latitude),
-      longitude: parseFloat(longitude),
-      rssi: parseInt(rssi) || 0,
-      battery: parseInt(battery) || 100
+    const payload = JSON.stringify({
+      event: 'LOCATION_UPDATE',
+      data: locationData
     });
 
-    await newLocation.save();
-    console.log(`[수신 완료] ${deviceId} | 위도: ${latitude}, 경도: ${longitude}`);
-    
-    res.status(201).json({ status: "success", message: "클라우드 저장 성공" });
-  } catch (err) {
-    res.status(500).json({ status: "error", message: err.message });
+    appClients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    });
+
+    return res.status(200).json({ status: 'success', data: locationData });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
-// [GET] 특정 기기의 최신 위치 조회 (앱/웹 대시보드 표시용)
-app.get('/api/location/latest/:deviceId', async (req, res) => {
+// (2) 과거 위치 이력 조회 API
+app.get('/api/ble/history/:deviceId', async (req, res) => {
   try {
-    const latest = await Location.findOne({ deviceId: req.params.deviceId })
-                                  .sort({ timestamp: -1 });
-    if (!latest) return res.status(404).json({ status: "error", message: "기기 데이터 없음" });
-    res.json(latest);
-  } catch (err) {
-    res.status(500).json({ status: "error", message: err.message });
+    const { deviceId } = req.params;
+    const limit = parseInt(req.query.limit) || 50;
+
+    const history = await Location.find({ deviceId })
+      .sort({ timestamp: -1 })
+      .limit(limit);
+
+    return res.status(200).json({ status: 'success', count: history.length, data: history });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
-// [GET] 전체 데이터 최신 20개 조회 (테스트용 추가)
-app.get('/api/location/all', async (req, res) => {
-  try {
-    const locations = await Location.find().sort({ timestamp: -1 }).limit(20);
-    res.json(locations);
-  } catch (err) {
-    res.status(500).json({ status: "error", message: err.message });
-  }
-});
-
-// 서버 가동
-app.listen(PORT, () => {
-  console.log(`[클라우드 서버 가동 중] 포트: ${PORT}`);
+// 5. 서버 실행
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
